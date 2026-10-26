@@ -1,0 +1,14 @@
+{
+  "name": "recent-sessions",
+  "version": "0.1.0",
+  "description": "A panel in the Claude desktop app's Code tab that lists your sessions by when each last finished, in their sidebar groups, with the most recent group on top.",
+  "author": { "name": "kevlar10x" },
+  "license": "MIT",
+  "homepage": "https://github.com/kevlar10x/recent-sessions",
+  "repository": "https://github.com/kevlar10x/recent-sessions",
+  "documentationUrl": "https://github.com/kevlar10x/recent-sessions#readme",
+  "supportUrl": "https://github.com/kevlar10x/recent-sessions/issues",
+  "privacyPolicyUrl": "https://github.com/kevlar10x/recent-sessions#privacy",
+  "keywords": ["sessions", "sidebar", "activity", "recent", "desktop", "mod"],
+  "types": "./types/index.d.ts"
+}
