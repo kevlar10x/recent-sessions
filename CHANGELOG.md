@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- The README lists the app tools the mod calls, the one program it starts, and what its two hooks do.
+
 ## 0.1.1 - 2026-10-26
 
 - The session you're in now lines up with the other rows in the panel. Clicking it shows that session.

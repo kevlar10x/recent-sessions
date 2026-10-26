@@ -41,6 +41,19 @@ The panel reads the session list only while it's open and its session is on scre
 
 The panel reads your sessions' titles, sidebar groups, working state, last activity times and app links from the desktop app. It saves one finish time per session, and whether you last left the panel open, in the mod's own storage on your computer. It makes no network requests. Clicking a session hands its `claude://` link to Windows Explorer (`open` on macOS), which passes it to the desktop app.
 
+## What it calls and runs
+
+While the panel is open, the mod calls three tools of the desktop app's own session servers (`ccd_session_mgmt` and `ccd_window`) on its own timer, without Claude asking for them:
+
+- `list_sessions` (up to 60 sessions) and `get_session` for the session the panel is in, which give titles, sidebar groups, working state, last activity times and `claude://` links.
+- `get_window_layout`, which says whether that session is on screen, so the panel can stop reading while it isn't.
+
+All three only read, and they talk to the desktop app on your computer. The mod sends nothing anywhere and fetches nothing from the network.
+
+The one program it starts is the system's link opener, and only when you click a session: `explorer.exe <link>` on Windows, `open <link>` on macOS. `<link>` is that session's `claude://claude.ai/epitaxy/...` link from the app, and the mod checks it against that exact pattern first.
+
+It also hooks two events. On `prompt.submit` it checks whether you last left the panel open and, if so, opens it in that session; your prompt passes on unchanged. On `ui.close` it stops reading the session list and remembers that you closed the panel.
+
 ## Limits
 
 - Tested on Windows. Opening a session from the panel on macOS hasn't been tested.
