@@ -5,7 +5,6 @@ export type Row = {
   // The app's claude:// link to the session; absent where the organization turned links off.
   link?: string
   isRunning: boolean
-  isSelf: boolean
   // How long ago it finished ("now", "4m", "2h", "3d"), or "working".
   ago: string
 }

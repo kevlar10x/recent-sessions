@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1 - 2026-10-26
+
+- The session you're in now lines up with the other rows in the panel. Clicking it shows that session.
+- The README has a screenshot of the panel.
+
 ## 0.1.0 - 2026-10-26
 
 - First release. `/recent` opens a Recent panel that lists your Code sessions by when each last finished, inside their sidebar groups. The group with the newest finish sits on top.

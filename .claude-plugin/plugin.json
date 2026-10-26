@@ -1,6 +1,6 @@
 {
   "name": "recent-sessions",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A panel in the Claude desktop app's Code tab that lists your sessions by when each last finished, in their sidebar groups, with the most recent group on top.",
   "author": { "name": "kevlar10x" },
   "license": "MIT",

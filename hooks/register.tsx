@@ -69,7 +69,7 @@ async function readSessions($: Engine) {
     call($, SESSIONS, 'get_session', { session_id: 'self' }).catch(() => null),
   ])
   const list = Array.isArray(others) ? (others as Listed[]) : []
-  return { list: self ? [self as Listed, ...list] : list, selfId: (self as Listed | null)?.sessionId }
+  return self ? [self as Listed, ...list] : list
 }
 
 function ago(ms: number) {
@@ -96,7 +96,7 @@ function track(list: Listed[]) {
   return isChanged
 }
 
-function arrange(list: Listed[], selfId: string | undefined, now: number): Board {
+function arrange(list: Listed[], now: number): Board {
   const at = (session: Listed) => finished?.[session.sessionId] ?? 0
   const groups = new Map<string, { id: string; name: string; members: Listed[]; top: number }>()
   for (const session of list) {
@@ -117,7 +117,6 @@ function arrange(list: Listed[], selfId: string | undefined, now: number): Board
           title: session.title || 'Untitled session',
           link: session.link !== undefined && LINK.test(session.link) ? session.link : undefined,
           isRunning: session.isRunning === true,
-          isSelf: session.sessionId === selfId,
           ago: session.isRunning ? 'working' : ago(now - at(session)),
         }),
       )
@@ -148,10 +147,10 @@ async function tick($: Engine) {
       const kept = await $.store.get('finishedAt')
       finished = kept !== null && typeof kept === 'object' ? (kept as Record<string, number>) : {}
     }
-    const { list, selfId } = await readSessions($)
+    const list = await readSessions($)
     if (track(list)) await $.store.set('finishedAt', finished)
     wait = list.some(session => session.isRunning) ? BUSY_MS : IDLE_MS
-    await show($, arrange(list, selfId, await $.clock.now()))
+    await show($, arrange(list, await $.clock.now()))
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error)
     await show($, { groups: [], error: reason.slice(0, 200) || 'unknown error' })
@@ -262,7 +261,8 @@ export const register: Register = on => {
         <Text dimColor>{row.ago}</Text>
       )
       const link = row.link
-      return row.isSelf || link === undefined ? (
+      // This session's own row is a button too, so every row lines up; pressing it shows this session.
+      return link === undefined ? (
         <Text>
           {title} {when}
         </Text>

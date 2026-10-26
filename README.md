@@ -2,6 +2,8 @@
 
 A Claude Code mod for the Claude desktop app. It adds a Recent panel to the Code tab that lists your sessions by when each one last finished, inside their sidebar groups, with the group that finished most recently at the top.
 
+![The Recent panel open beside a Code session, with the session list blurred](docs/screenshot.png)
+
 The app's sidebar sorts the sessions in a group by last activity, and that time keeps moving while a session works. So when several sessions are busy and one finishes, the finished one drops below the ones still running. The groups themselves stay in the order you dragged them into. Mods can't reorder the sidebar, so this panel gives you a second view of it:
 
 - When a session finishes, it moves to the top of its group, and its whole group moves to the top of the panel.
