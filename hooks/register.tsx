@@ -10,17 +10,17 @@ import type { Board, Group, Row } from '../types'
 // finishes, and a session that is still working keeps its place until it is
 // done. The desktop app gives mods no way to reorder its own sidebar, so this
 // is a second view of it. The list comes from the app's own session tools and
-// is read only while the panel is open and its session is on screen.
+// is read only while the panel is open and an app window shows its session:
+// the app detaches the window when you switch to another session.
 
 const PANE = 'recent'
 const TITLE = 'Recent'
 const SESSIONS = 'ccd_session_mgmt'
-const WINDOW = 'ccd_window'
 const board = atom({ plugin: 'recent-sessions', key: 'board' } as const, null)
 
 const BUSY_MS = 3000 // a session is working: its finish shows within 3 s
 const IDLE_MS = 8000 // nothing is working
-const AWAY_MS = 5000 // this session is off screen: only check whether it's back
+const SELF_MS = 30000 // this session's own row, while nothing says it changed
 const LIST_LIMIT = 60
 const PER_GROUP = 8
 const LINK = /^claude:\/\/claude\.ai\/epitaxy\/[\w-]+$/
@@ -37,8 +37,14 @@ type Listed = {
 
 let isOpen = false
 let isTicking = false
+let isPaused = false
 let timer: Timer | undefined
 let shown = ''
+// This session's own row: list_sessions leaves it out, so it's read on its own,
+// and only when it can have changed (see wantsSelf).
+let self: Listed | undefined
+let selfReadAt = 0
+let isSelfStale = true
 // When each session last finished (ms), kept in $.store across sessions.
 let finished: Record<string, number> | undefined
 
@@ -53,23 +59,25 @@ async function call($: Engine, server: string, tool: string, args: Record<string
   return JSON.parse(textOf(result)) as unknown
 }
 
-// The app answers with where this session shows; any failure counts as on screen.
-async function isOnScreen($: Engine) {
-  try {
-    const layout = (await call($, WINDOW, 'get_window_layout', {})) as { this_session?: { on_screen?: boolean } }
-    return layout.this_session?.on_screen !== false
-  } catch {
-    return true
-  }
+// The own row changes when a prompt starts a turn, when the turn ends, while it
+// works, or when it is renamed or moved to another group, which nothing reports:
+// that last case shows within SELF_MS.
+function wantsSelf(now: number) {
+  return isSelfStale || self === undefined || self.isRunning === true || now - selfReadAt >= SELF_MS
 }
 
-async function readSessions($: Engine) {
-  const [others, self] = await Promise.all([
+async function readSessions($: Engine, now: number) {
+  const [others, fresh] = await Promise.all([
     call($, SESSIONS, 'list_sessions', { limit: LIST_LIMIT }),
-    call($, SESSIONS, 'get_session', { session_id: 'self' }).catch(() => null),
+    wantsSelf(now) ? call($, SESSIONS, 'get_session', { session_id: 'self' }).catch(() => null) : undefined,
   ])
+  if (fresh) {
+    self = fresh as Listed
+    selfReadAt = now
+    isSelfStale = false
+  }
   const list = Array.isArray(others) ? (others as Listed[]) : []
-  return self ? [self as Listed, ...list] : list
+  return self ? [self, ...list] : list
 }
 
 function ago(ms: number) {
@@ -152,11 +160,13 @@ async function tick($: Engine) {
   isTicking = true
   let wait = IDLE_MS
   try {
-    if (!(await isOnScreen($))) {
-      wait = AWAY_MS
+    // With no app window attached nothing draws the panel: stop until one attaches.
+    if ((await $.session.surfaces()).length === 0) {
+      isPaused = true
       return
     }
-    const list = await readSessions($)
+    const now = await $.clock.now()
+    const list = await readSessions($, now)
     // Read every time: another session's panel may have saved a later finish
     // since, and writing this session's older copy over it would lose it. If
     // two write at once, the one that lost its time writes it again next tick.
@@ -166,24 +176,32 @@ async function tick($: Engine) {
     track(list)
     if (!isSaved(finished, saved)) await $.store.set('finishedAt', finished)
     wait = list.some(session => session.isRunning) ? BUSY_MS : IDLE_MS
-    await show($, arrange(list, await $.clock.now()))
+    await show($, arrange(list, now))
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error)
     await show($, { groups: [], error: reason.slice(0, 200) || 'unknown error' })
     wait = IDLE_MS
   } finally {
     isTicking = false
-    if (isOpen) timer = $.clock.after(wait, () => void tick($))
+    if (isOpen && !isPaused) timer = $.clock.after(wait, () => void tick($))
   }
 }
 
 function startPolling($: Engine) {
   isOpen = true
+  isPaused = false
   if (timer === undefined && !isTicking) void tick($)
 }
 
 function stopPolling() {
   isOpen = false
+  timer?.cancel()
+  timer = undefined
+}
+
+// Nothing draws the panel until a window attaches again, so no timer runs meanwhile.
+function pause() {
+  isPaused = true
   timer?.cancel()
   timer = undefined
 }
@@ -222,10 +240,33 @@ export const register: Register = on => {
 
   // A session that was already running when the panel was opened elsewhere gets it on its next prompt.
   on('prompt.submit', async ($, e, next) => {
+    isSelfStale = true
     // /recent itself toggles the pane: opening it here first would make it close.
     if (!isOpen && e.command?.name !== 'recent') await follow($)
 
     return next(e)
+  })
+
+  on('turn.complete', ($, e, next) => {
+    isSelfStale = true
+
+    return next(e)
+  })
+
+  // Switching to another session detaches its window: stop reading until it's back.
+  on('session.detach', async ($, e, next) => {
+    const result = await next(e)
+    if (isOpen && (await $.session.surfaces()).length === 0) pause()
+
+    return result
+  })
+
+  // An app window attached again: read the list now rather than at the next timer.
+  on('session.attach', async ($, e, next) => {
+    const result = await next(e)
+    if (isOpen && isPaused) startPolling($)
+
+    return result
   })
 
   on('command.run', { command: 'recent' }, async $ => {

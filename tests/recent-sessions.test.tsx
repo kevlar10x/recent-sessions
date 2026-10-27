@@ -57,6 +57,10 @@ function engine(on: On, app: App) {
   let isUp = false
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('command.register', () => ({ value: { command: 'recent' } }))
+  // The app attaches a window only while this session is on screen.
+  on('session.surfaces', () => ({ value: app.isOnScreen ? ['desktop'] : [] }))
+  on('session.attach', (_, e) => ({ clientId: e.clientId }))
+  on('session.detach', (_, e) => ({ clientId: e.clientId }))
   on('ui.open', () => {
     isUp = true
     return { value: { isPlaced: true } }
@@ -71,12 +75,7 @@ function engine(on: On, app: App) {
   on('mcp.call', (_, e) => {
     app.calls.push(e.tool)
     if (app.isMissing) throw new Error(`no MCP server named ${e.server}`)
-    const answer =
-      e.tool === 'get_window_layout'
-        ? { this_session: { on_screen: app.isOnScreen } }
-        : e.tool === 'list_sessions'
-          ? app.list
-          : app.self
+    const answer = e.tool === 'list_sessions' ? app.list : app.self
     return { value: { content: [{ type: 'text', text: JSON.stringify(answer) }], isError: false } }
   })
 }
@@ -85,6 +84,19 @@ async function open($: Engine, clock: MockClock) {
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
   await $.command.run(RECENT)
   await clock.settle()
+}
+
+const WINDOW = { surface: 'desktop', clientId: 'desktop:default' } as const
+
+// Switching to another session and back, as the app reports it.
+async function away($: Engine, app: App) {
+  app.isOnScreen = false
+  await $.session.detach({ ...WINDOW, reason: 'detach' })
+}
+
+async function back($: Engine, app: App) {
+  app.isOnScreen = true
+  await $.session.attach(WINDOW)
 }
 
 async function drawn($: Engine, surface: 'desktop' | 'terminal' = 'desktop') {
@@ -140,16 +152,22 @@ test('a finished session moves its whole group up, a working one keeps its place
   expect(text).toContain('working')
 })
 
-test('the list is not read while the session is off screen', async ($, on) => {
+test('nothing is read while another session is on screen, and the list is read at once on return', async ($, on) => {
   const clock = mock.clock(on, { now: START })
   mock.store(on)
-  const app: App = { list: [session('a', 'one', 0)], self: session('self', null, 0), isOnScreen: false, calls: [] }
+  const app: App = { list: [session('a', 'one', 0)], self: session('self', null, 0), isOnScreen: true, calls: [] }
   engine(on, app)
   await open($, clock)
-  await clock.advance(20_000)
+  await away($, app)
+  const count = app.calls.length
+  await clock.advance(60_000)
+  expect(app.calls.length).toBe(count)
 
-  expect(app.calls.includes('list_sessions')).toBe(false)
-  expect(app.calls.filter(tool => tool === 'get_window_layout').length).toBeGreaterThan(1)
+  app.list = [session('a', 'one', 0), session('b', 'one', 1)]
+  await back($, app)
+  await clock.settle()
+  expect(app.calls.length).toBeGreaterThan(count)
+  expect(await drawn($)).toContain('Session b')
 })
 
 test('closing the panel stops the polling', async ($, on) => {
@@ -220,15 +238,44 @@ test("a later finish saved by another session's panel is kept, not overwritten",
 
   // While this session is off screen, x finishes at 9 and starts working again.
   // Another session's panel saw it finish and saved that; a new session appears.
-  app.isOnScreen = false
+  await away($, app)
   await clock.advance(10_000)
   saved.finishedAt = { ...(saved.finishedAt as Record<string, number>), x: START + 9 * MINUTE }
   app.list = [session('x', 'one', 12, true), session('w', 'two', 7), session('new', null, 1)]
-  app.isOnScreen = true
+  await back($, app)
   await clock.advance(10_000)
 
   expect((saved.finishedAt as Record<string, number>).x).toBe(START + 9 * MINUTE)
   expect(before(await drawn($), 'Group one', 'Group two')).toBe(true)
+})
+
+test('the own row of this session is read again after a prompt and after its turn ends', async ($, on) => {
+  const clock = mock.clock(on, { now: START })
+  mock.store(on)
+  const app: App = { list: [session('a', 'one', 0)], self: session('self', 'one', 0), isOnScreen: true, calls: [] }
+  engine(on, app)
+  on('prompt.submit', (_, e) => ({ text: e.text }))
+  on('turn.complete', () => ({ text: '' }))
+  await open($, clock)
+  const selfReads = () => app.calls.filter(tool => tool === 'get_session').length
+
+  // Idle and unchanged: not read again on every check.
+  await clock.advance(16_000)
+  const idle = selfReads()
+  expect(idle).toBe(1)
+
+  // A prompt here starts a turn: the next check reads it and shows it working.
+  app.self = session('self', 'one', 1, true)
+  await $.prompt.submit({ text: 'hello', wait: false, origin: { kind: 'composer' } })
+  await clock.advance(8_000)
+  expect(selfReads()).toBe(idle + 1)
+  expect(await drawn($)).toContain('working')
+
+  // The turn ends: read again until the app says it's done.
+  app.self = session('self', 'one', 2)
+  await $.turn.complete({ turnId: 't1', answer: '', durationMs: 1000 } as never)
+  await clock.advance(3_000)
+  expect(await drawn($)).not.toContain('working')
 })
 
 test('when the list cannot be read the panel says why', async ($, on) => {
