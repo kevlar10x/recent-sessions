@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- The README links the other kevlar10x mods.
+- The plugin listing has a display name, an icon and a short description.
 - The README lists the app tools the mod calls, the one program it starts, and what its two hooks do.
 
 ## 0.1.1 - 2026-10-26

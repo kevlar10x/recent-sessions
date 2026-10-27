@@ -70,4 +70,6 @@ claude plugin uninstall recent-sessions
 
 MIT, by kevlar10x. The original is at https://github.com/kevlar10x/recent-sessions.
 
+More mods by kevlar10x: [status-dots](https://github.com/kevlar10x/status-dots) shows how each session ended with a colored dot in its title, and [quiet-transcript](https://github.com/kevlar10x/quiet-transcript) fades everything in the transcript except Claude's answers.
+
 If you'd like to leave a tip: https://ko-fi.com/kevlar10x

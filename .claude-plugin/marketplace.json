@@ -1,6 +1,13 @@
 {
   "name": "kevlar10x-recent-sessions",
-  "owner": { "name": "kevlar10x" },
+  "owner": { "name": "kevlar10x", "url": "https://github.com/kevlar10x" },
   "description": "recent-sessions, a Claude Code mod by kevlar10x",
-  "plugins": [{ "name": "recent-sessions", "source": "./" }]
+  "plugins": [
+    {
+      "name": "recent-sessions",
+      "source": "./",
+      "description": "A Recent panel that lists your Code sessions by when each last finished.",
+      "category": "productivity"
+    }
+  ]
 }
