@@ -91,9 +91,22 @@ function track(list: Listed[]) {
     const before = known[session.sessionId]
     next[session.sessionId] = session.isRunning && before !== undefined ? before : active
   }
-  const isChanged = JSON.stringify(next) !== JSON.stringify(known)
   finished = next
-  return isChanged
+}
+
+// Finish times only move forward, so of this session's times and the ones
+// another session's panel saved, the later one for each session is right.
+function latest(mine: Record<string, number>, saved: Record<string, unknown>) {
+  const merged = { ...mine }
+  for (const [id, at] of Object.entries(saved)) {
+    if (typeof at === 'number' && at > (merged[id] ?? -Infinity)) merged[id] = at
+  }
+  return merged
+}
+
+// Whether the store already holds every time this session knows.
+function isSaved(mine: Record<string, number>, saved: Record<string, unknown>) {
+  return Object.entries(mine).every(([id, at]) => saved[id] === at)
 }
 
 function arrange(list: Listed[], now: number): Board {
@@ -143,12 +156,15 @@ async function tick($: Engine) {
       wait = AWAY_MS
       return
     }
-    if (finished === undefined) {
-      const kept = await $.store.get('finishedAt')
-      finished = kept !== null && typeof kept === 'object' ? (kept as Record<string, number>) : {}
-    }
     const list = await readSessions($)
-    if (track(list)) await $.store.set('finishedAt', finished)
+    // Read every time: another session's panel may have saved a later finish
+    // since, and writing this session's older copy over it would lose it. If
+    // two write at once, the one that lost its time writes it again next tick.
+    const kept = await $.store.get('finishedAt')
+    const saved = kept !== null && typeof kept === 'object' ? (kept as Record<string, unknown>) : {}
+    finished = latest(finished ?? {}, saved)
+    track(list)
+    if (!isSaved(finished, saved)) await $.store.set('finishedAt', finished)
     wait = list.some(session => session.isRunning) ? BUSY_MS : IDLE_MS
     await show($, arrange(list, await $.clock.now()))
   } catch (error) {

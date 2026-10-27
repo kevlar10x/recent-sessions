@@ -199,6 +199,38 @@ test('a session already running opens the panel on its next prompt', async ($, o
   expect(await drawn($)).toContain('Session a')
 })
 
+test("a later finish saved by another session's panel is kept, not overwritten", async ($, on) => {
+  const clock = mock.clock(on, { now: START + 10 * MINUTE })
+  // The store every session shares, which the test writes to as another session would.
+  const saved: Record<string, unknown> = {}
+  on('store.get', (_, e) => ({ value: saved[e.key] }))
+  on('store.set', (_, e) => {
+    saved[e.key] = e.value
+    return { value: undefined }
+  })
+  const app: App = {
+    list: [session('x', 'one', 5), session('w', 'two', 7)],
+    self: session('self', 'three', 0),
+    isOnScreen: true,
+    calls: [],
+  }
+  engine(on, app)
+  await open($, clock)
+  expect(before(await drawn($), 'Group two', 'Group one')).toBe(true)
+
+  // While this session is off screen, x finishes at 9 and starts working again.
+  // Another session's panel saw it finish and saved that; a new session appears.
+  app.isOnScreen = false
+  await clock.advance(10_000)
+  saved.finishedAt = { ...(saved.finishedAt as Record<string, number>), x: START + 9 * MINUTE }
+  app.list = [session('x', 'one', 12, true), session('w', 'two', 7), session('new', null, 1)]
+  app.isOnScreen = true
+  await clock.advance(10_000)
+
+  expect((saved.finishedAt as Record<string, number>).x).toBe(START + 9 * MINUTE)
+  expect(before(await drawn($), 'Group one', 'Group two')).toBe(true)
+})
+
 test('when the list cannot be read the panel says why', async ($, on) => {
   const clock = mock.clock(on, { now: START })
   mock.store(on)

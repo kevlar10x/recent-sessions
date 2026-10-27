@@ -1,7 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.1.2 - 2026-10-27
 
+- With the Recent panel open in more than one session, one panel could save an older finish time over a newer one that another panel had saved, so a session sat lower than it should. Each panel now keeps the later time.
 - The README links the other kevlar10x mods.
 - The plugin listing has a display name, an icon and a short description.
 - The README lists the app tools the mod calls, the one program it starts, and what its two hooks do.
