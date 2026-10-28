@@ -97,7 +97,8 @@ function track(list: Listed[]) {
   for (const session of list) {
     const active = Date.parse(session.lastActivityAt ?? '') || 0
     const before = known[session.sessionId]
-    next[session.sessionId] = session.isRunning && before !== undefined ? before : active
+    // A finish time never moves back: the list can lag a finish another panel saved.
+    next[session.sessionId] = before === undefined ? active : session.isRunning ? before : Math.max(before, active)
   }
   finished = next
 }

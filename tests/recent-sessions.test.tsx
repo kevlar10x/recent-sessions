@@ -249,6 +249,29 @@ test("a later finish saved by another session's panel is kept, not overwritten",
   expect(before(await drawn($), 'Group one', 'Group two')).toBe(true)
 })
 
+test("an idle session's older list time doesn't replace a later saved finish", async ($, on) => {
+  const clock = mock.clock(on, { now: START + 10 * MINUTE })
+  const saved: Record<string, unknown> = { finishedAt: { x: START + 9 * MINUTE } }
+  on('store.get', (_, e) => ({ value: saved[e.key] }))
+  on('store.set', (_, e) => {
+    saved[e.key] = e.value
+    return { value: undefined }
+  })
+  // The list still shows x idle with an activity time older than the saved finish.
+  const app: App = {
+    list: [session('x', 'one', 5), session('w', 'two', 7)],
+    self: session('self', 'three', 0),
+    isOnScreen: true,
+    calls: [],
+  }
+  engine(on, app)
+  await open($, clock)
+  await clock.advance(10_000)
+
+  expect((saved.finishedAt as Record<string, number>).x).toBe(START + 9 * MINUTE)
+  expect(before(await drawn($), 'Group one', 'Group two')).toBe(true)
+})
+
 test('the own row of this session is read again after a prompt and after its turn ends', async ($, on) => {
   const clock = mock.clock(on, { now: START })
   mock.store(on)

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.4 - 2026-10-28
+
+- An idle session could take an older finish time from the app's list over a later one another panel had saved, so it sat lower than it should. A finish time no longer moves back.
+
 ## 0.1.3 - 2026-10-28
 
 - The panel goes quiet while you look at another session and reads the list again the moment you come back. Before, it checked every 5 seconds whether you were back.
