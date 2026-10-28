@@ -364,6 +364,25 @@ test("other panels' saves are read once a minute while the panel stays open", as
   expect(app.calls.filter(tool => tool === 'list_sessions').length).toBeGreaterThan(15)
 })
 
+test("after a restart, a working session's saved finish stays in this panel's key", async ($, on) => {
+  const clock = mock.clock(on, { now: START + 12 * MINUTE })
+  // Saved before the restart: this panel saw x finish at 9; x has started again since.
+  const saved: Record<string, unknown> = { 'finished:self': { at: START, times: { x: START + 9 * MINUTE } } }
+  sharedStore(on, saved)
+  const app: App = {
+    list: [session('x', 'one', 12, true), session('w', 'two', 10)],
+    self: session('self', 'three', 0),
+    isOnScreen: true,
+    calls: [],
+  }
+  engine(on, app)
+  await open($, clock)
+  await clock.advance(70_000)
+
+  expect(timesOf(saved['finished:self'])?.x).toBe(START + 9 * MINUTE)
+  expect(before(await drawn($), 'Group two', 'Group one')).toBe(true)
+})
+
 test('the own row of this session is read again after a prompt and after its turn ends', async ($, on) => {
   const clock = mock.clock(on, { now: START })
   mock.store(on)

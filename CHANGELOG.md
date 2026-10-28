@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.6 - 2026-10-28
+
+- After the app restarted or the mod reloaded, a panel's first save dropped the finish of every session that was working right then, so those sessions later jumped up the list. The panel now picks its own saved finishes back up first.
+
 ## 0.1.5 - 2026-10-28
 
 - With the panel open in more than one session, a finish time one panel saved could still be lost when another panel saved at the same moment. Each panel now saves the finish times it saw under its own entry and reads everyone's, keeping the latest for each session, so no save can be written over.

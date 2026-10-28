@@ -125,6 +125,13 @@ async function readSaved($: Engine, now: number, ownKey: string | undefined) {
       continue
     }
     add(entry?.times)
+    // This panel's own key holds what it saw before a restart or reload: take it
+    // back as its own, or the next save would drop finishes of sessions now working.
+    if (key === ownKey && entry?.times !== null && typeof entry?.times === 'object') {
+      for (const [id, at] of Object.entries(entry.times)) {
+        if (typeof at === 'number' && at > (observed[id] ?? -Infinity)) observed[id] = at
+      }
+    }
   }
   saved = times
   savedReadAt = now
