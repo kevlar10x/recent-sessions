@@ -41,7 +41,7 @@ It redraws only when something it shows has changed, and it keeps nothing but th
 
 ## Privacy
 
-The panel reads your sessions' titles, sidebar groups, working state, last activity times and app links from the desktop app. It saves one finish time per session, and whether you last left the panel open, in the mod's own storage on your computer. It makes no network requests. Clicking a session hands its `claude://` link to Windows Explorer (`open` on macOS), which passes it to the desktop app.
+The panel reads your sessions' titles, sidebar groups, working state, last activity times and app links from the desktop app. In the mod's own storage on your computer, each session's panel saves the finish times it saw under its own entry, so panels in different sessions never write over each other, and the mod saves whether you last left the panel open. An entry is removed once its panel hasn't saved for two weeks. It makes no network requests. Clicking a session hands its `claude://` link to Windows Explorer (`open` on macOS), which passes it to the desktop app.
 
 ## What it calls and runs
 
