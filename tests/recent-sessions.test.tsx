@@ -109,6 +109,30 @@ async function drawn($: Engine, surface: 'desktop' | 'terminal' = 'desktop') {
 
 const before = (text: string, first: string, second: string) => text.indexOf(first) < text.indexOf(second)
 
+// The store every session's panel shares, which a test writes to as another
+// session's panel would. `onSet` runs as this panel saves, before its save
+// lands. Counts how often the panel lists the keys.
+function sharedStore(on: On, saved: Record<string, unknown>, onSet?: (key: string) => void) {
+  const counts = { keys: 0 }
+  on('store.get', (_, e) => ({ value: saved[e.key] }))
+  on('store.set', (_, e) => {
+    onSet?.(e.key)
+    saved[e.key] = e.value
+    return { value: undefined }
+  })
+  on('store.delete', (_, e) => {
+    delete saved[e.key]
+    return { value: undefined }
+  })
+  on('store.keys', () => {
+    counts.keys += 1
+    return { value: Object.keys(saved) }
+  })
+  return counts
+}
+
+const timesOf = (entry: unknown) => (entry as { times: Record<string, number> } | undefined)?.times
+
 test('groups and sessions are ordered by when they last finished', async ($, on) => {
   const clock = mock.clock(on, { now: START + 10 * MINUTE })
   mock.store(on)
@@ -204,6 +228,7 @@ test('a session already running opens the panel on its next prompt', async ($, o
   let isWanted = false
   on('store.get', (_, e) => ({ value: e.key === 'isWanted' ? isWanted : undefined }))
   on('store.set', () => ({ value: undefined }))
+  on('store.keys', () => ({ value: [] }))
   on('prompt.submit', (_, e) => ({ text: e.text }))
   const app: App = { list: [session('a', 'one', 0)], self: session('self', null, 0), isOnScreen: true, calls: [] }
   engine(on, app)
@@ -219,13 +244,8 @@ test('a session already running opens the panel on its next prompt', async ($, o
 
 test("a later finish saved by another session's panel is kept, not overwritten", async ($, on) => {
   const clock = mock.clock(on, { now: START + 10 * MINUTE })
-  // The store every session shares, which the test writes to as another session would.
   const saved: Record<string, unknown> = {}
-  on('store.get', (_, e) => ({ value: saved[e.key] }))
-  on('store.set', (_, e) => {
-    saved[e.key] = e.value
-    return { value: undefined }
-  })
+  sharedStore(on, saved)
   const app: App = {
     list: [session('x', 'one', 5), session('w', 'two', 7)],
     self: session('self', 'three', 0),
@@ -252,11 +272,7 @@ test("a later finish saved by another session's panel is kept, not overwritten",
 test("an idle session's older list time doesn't replace a later saved finish", async ($, on) => {
   const clock = mock.clock(on, { now: START + 10 * MINUTE })
   const saved: Record<string, unknown> = { finishedAt: { x: START + 9 * MINUTE } }
-  on('store.get', (_, e) => ({ value: saved[e.key] }))
-  on('store.set', (_, e) => {
-    saved[e.key] = e.value
-    return { value: undefined }
-  })
+  sharedStore(on, saved)
   // The list still shows x idle with an activity time older than the saved finish.
   const app: App = {
     list: [session('x', 'one', 5), session('w', 'two', 7)],
@@ -270,6 +286,82 @@ test("an idle session's older list time doesn't replace a later saved finish", a
 
   expect((saved.finishedAt as Record<string, number>).x).toBe(START + 9 * MINUTE)
   expect(before(await drawn($), 'Group one', 'Group two')).toBe(true)
+})
+
+test("a finish another panel saves after this one's last read isn't written over", async ($, on) => {
+  const clock = mock.clock(on, { now: START + 10 * MINUTE })
+  const saved: Record<string, unknown> = {}
+  // Right as this panel saves, another session's panel saves that x finished at
+  // 9, in the shared key older versions used and in its own key.
+  sharedStore(on, saved, key => {
+    if (!key.startsWith('finished')) return
+    const was = (saved.finishedAt as Record<string, number> | undefined) ?? {}
+    saved.finishedAt = { ...was, x: START + 9 * MINUTE }
+    saved['finished:other'] = { at: START + 10 * MINUTE, times: { x: START + 9 * MINUTE } }
+  })
+  const app: App = {
+    list: [session('x', 'one', 5), session('w', 'two', 7)],
+    self: session('self', 'three', 0),
+    isOnScreen: true,
+    calls: [],
+  }
+  engine(on, app)
+  await open($, clock)
+
+  // x starts working again, and a minute later the panel reads what the others saved.
+  app.list = [session('x', 'one', 12, true), session('w', 'two', 7)]
+  await clock.advance(70_000)
+
+  expect(timesOf(saved['finished:other'])?.x).toBe(START + 9 * MINUTE)
+  expect(before(await drawn($), 'Group one', 'Group two')).toBe(true)
+})
+
+test("a working session's first sighting isn't saved, so it can't outrank a finish", async ($, on) => {
+  const clock = mock.clock(on, { now: START + 12 * MINUTE })
+  // Another panel saw z finish at 9; this one only ever sees it working.
+  const saved: Record<string, unknown> = { 'finished:other': { at: START, times: { z: START + 9 * MINUTE } } }
+  sharedStore(on, saved)
+  const app: App = {
+    list: [session('z', 'one', 12, true), session('w', 'two', 10)],
+    self: session('self', 'three', 0),
+    isOnScreen: true,
+    calls: [],
+  }
+  engine(on, app)
+  await open($, clock)
+
+  expect(timesOf(saved['finished:self'])?.z).toBeUndefined()
+  expect(before(await drawn($), 'Group two', 'Group one')).toBe(true)
+})
+
+test("a panel's saved finishes go once it hasn't saved for two weeks", async ($, on) => {
+  const clock = mock.clock(on, { now: START })
+  const saved: Record<string, unknown> = {
+    'finished:gone': { at: START - 15 * 24 * 60 * MINUTE, times: { a: START - 15 * 24 * 60 * MINUTE } },
+    'finished:recent': { at: START - MINUTE, times: { a: START - MINUTE } },
+  }
+  sharedStore(on, saved)
+  const app: App = { list: [session('a', 'one', -5)], self: session('self', null, 0), isOnScreen: true, calls: [] }
+  engine(on, app)
+  await open($, clock)
+
+  expect('finished:gone' in saved).toBe(false)
+  expect('finished:recent' in saved).toBe(true)
+  expect(timesOf(saved['finished:self'])?.a).toBe(START - 5 * MINUTE)
+})
+
+test("other panels' saves are read once a minute while the panel stays open", async ($, on) => {
+  const clock = mock.clock(on, { now: START })
+  const saved: Record<string, unknown> = {}
+  const counts = sharedStore(on, saved)
+  const app: App = { list: [session('a', 'one', 0, true)], self: session('self', null, 0), isOnScreen: true, calls: [] }
+  engine(on, app)
+  await open($, clock)
+  await clock.advance(60_000)
+
+  // A tick every 3 s while a session works, but the keys only at the start and once after a minute.
+  expect(counts.keys).toBe(2)
+  expect(app.calls.filter(tool => tool === 'list_sessions').length).toBeGreaterThan(15)
 })
 
 test('the own row of this session is read again after a prompt and after its turn ends', async ($, on) => {

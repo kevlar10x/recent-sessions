@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.5 - 2026-10-28
+
+- With the panel open in more than one session, a finish time one panel saved could still be lost when another panel saved at the same moment. Each panel now saves the finish times it saw under its own entry and reads everyone's, keeping the latest for each session, so no save can be written over.
+- A working session that no panel has seen finish no longer shares the time it was first seen at, so that time can't push it above a session whose finish another panel saw.
+- What other panels saved is read when the panel opens or comes back on screen, and once a minute while it stays open. Before, the shared list was read on every check, up to 20 times a minute.
+- Saved entries from panels that haven't saved for two weeks are removed.
+
 ## 0.1.4 - 2026-10-28
 
 - An idle session could take an older finish time from the app's list over a later one another panel had saved, so it sat lower than it should. A finish time no longer moves back.

@@ -21,6 +21,11 @@ const board = atom({ plugin: 'recent-sessions', key: 'board' } as const, null)
 const BUSY_MS = 3000 // a session is working: its finish shows within 3 s
 const IDLE_MS = 8000 // nothing is working
 const SELF_MS = 30000 // this session's own row, while nothing says it changed
+const OTHERS_MS = 60000 // what the other panels saved, while this one stays open
+const KEY = 'finished:' // each panel saves the finishes it saw under KEY + its session id
+const LEGACY_KEY = 'finishedAt' // the one shared key before 0.1.5, still read for its times
+const KEEP_MS = 14 * 24 * 60 * 60 * 1000 // a panel's key goes once it hasn't saved for this long
+const REFRESH_MS = 24 * 60 * 60 * 1000 // an open panel saves at least this often, so its key stays
 const LIST_LIMIT = 60
 const PER_GROUP = 8
 const LINK = /^claude:\/\/claude\.ai\/epitaxy\/[\w-]+$/
@@ -45,8 +50,20 @@ let shown = ''
 let self: Listed | undefined
 let selfReadAt = 0
 let isSelfStale = true
-// When each session last finished (ms), kept in $.store across sessions.
+// When each session last finished (ms), as the panel shows it.
 let finished: Record<string, number> | undefined
+// The finishes this session's panel has seen itself, which it alone saves, under
+// its own key, so no other panel's save can ever be written over.
+let observed: Record<string, number> = {}
+let savedJson = ''
+let savedAt = 0
+// When a running session no panel has seen finish was first seen. Kept here
+// only: a first sighting isn't a finish and mustn't outrank one.
+let firstSeen: Record<string, number> = {}
+// The finishes every panel has saved, the latest for each session, and when
+// they were last read.
+let saved: Record<string, number> = {}
+let savedReadAt: number | undefined
 
 function textOf(result: McpToolResult) {
   const block = result.content.find(one => one.type === 'text') as { text?: string } | undefined
@@ -88,34 +105,65 @@ function ago(ms: number) {
   return hours < 24 ? `${hours}h` : `${Math.floor(hours / 24)}d`
 }
 
-// A finished session takes its last activity as its finish time. A working one
-// keeps the finish it had, so it doesn't jump up while it works; one never seen
-// idle keeps the activity time it was first seen with.
+// Reads what every panel saved and keeps the latest finish for each session:
+// finish times only move forward. A key whose panel hasn't saved for KEEP_MS is
+// removed on the way.
+async function readSaved($: Engine, now: number, ownKey: string | undefined) {
+  const times: Record<string, number> = {}
+  const add = (more: unknown) => {
+    if (more === null || typeof more !== 'object') return
+    for (const [id, at] of Object.entries(more)) {
+      if (typeof at === 'number' && at > (times[id] ?? -Infinity)) times[id] = at
+    }
+  }
+  for (const key of await $.store.keys()) {
+    if (key === LEGACY_KEY) add(await $.store.get(key))
+    if (!key.startsWith(KEY)) continue
+    const entry = (await $.store.get(key)) as { at?: unknown; times?: unknown } | undefined
+    if (key !== ownKey && (typeof entry?.at !== 'number' || now - entry.at > KEEP_MS)) {
+      await $.store.delete(key)
+      continue
+    }
+    add(entry?.times)
+  }
+  saved = times
+  savedReadAt = now
+}
+
+// A finished session takes the latest finish any panel saw, its last activity
+// included. A working one keeps the finish it had, so it doesn't jump up while
+// it works; one no panel has seen finish keeps the time it was first seen at.
 function track(list: Listed[]) {
-  const known = finished ?? {}
-  const next: Record<string, number> = {}
+  const shown: Record<string, number> = {}
+  const mine: Record<string, number> = {}
+  const first: Record<string, number> = {}
   for (const session of list) {
+    const id = session.sessionId
     const active = Date.parse(session.lastActivityAt ?? '') || 0
-    const before = known[session.sessionId]
-    // A finish time never moves back: the list can lag a finish another panel saved.
-    next[session.sessionId] = before === undefined ? active : session.isRunning ? before : Math.max(before, active)
+    const known = Math.max(saved[id] ?? -Infinity, observed[id] ?? -Infinity)
+    if (!session.isRunning) {
+      mine[id] = Math.max(observed[id] ?? -Infinity, active)
+      shown[id] = Math.max(known, active)
+    } else if (known > -Infinity) {
+      if (observed[id] !== undefined) mine[id] = observed[id]
+      shown[id] = known
+    } else {
+      first[id] = firstSeen[id] ?? active
+      shown[id] = first[id]
+    }
   }
-  finished = next
+  observed = mine
+  firstSeen = first
+  finished = shown
 }
 
-// Finish times only move forward, so of this session's times and the ones
-// another session's panel saved, the later one for each session is right.
-function latest(mine: Record<string, number>, saved: Record<string, unknown>) {
-  const merged = { ...mine }
-  for (const [id, at] of Object.entries(saved)) {
-    if (typeof at === 'number' && at > (merged[id] ?? -Infinity)) merged[id] = at
-  }
-  return merged
-}
-
-// Whether the store already holds every time this session knows.
-function isSaved(mine: Record<string, number>, saved: Record<string, unknown>) {
-  return Object.entries(mine).every(([id, at]) => saved[id] === at)
+// Saves the finishes this panel saw under its own key, when they changed.
+async function save($: Engine, now: number, ownKey: string | undefined) {
+  const json = JSON.stringify(observed)
+  if (ownKey === undefined || (json === savedJson && now - savedAt < REFRESH_MS)) return
+  await $.store.set(ownKey, { at: now, times: observed })
+  savedJson = json
+  savedAt = now
 }
 
 function arrange(list: Listed[], now: number): Board {
@@ -168,14 +216,13 @@ async function tick($: Engine) {
     }
     const now = await $.clock.now()
     const list = await readSessions($, now)
-    // Read every time: another session's panel may have saved a later finish
-    // since, and writing this session's older copy over it would lose it. If
-    // two write at once, the one that lost its time writes it again next tick.
-    const kept = await $.store.get('finishedAt')
-    const saved = kept !== null && typeof kept === 'object' ? (kept as Record<string, unknown>) : {}
-    finished = latest(finished ?? {}, saved)
+    const ownKey = self === undefined ? undefined : `${KEY}${self.sessionId}`
+    // The list shows every idle session's finish to every panel; what the
+    // others saved adds only finishes this one missed, so it's read when the
+    // panel starts or comes back, and once a minute in between.
+    if (savedReadAt === undefined || now - savedReadAt >= OTHERS_MS) await readSaved($, now, ownKey)
     track(list)
-    if (!isSaved(finished, saved)) await $.store.set('finishedAt', finished)
+    await save($, now, ownKey)
     wait = list.some(session => session.isRunning) ? BUSY_MS : IDLE_MS
     await show($, arrange(list, now))
   } catch (error) {
@@ -191,6 +238,8 @@ async function tick($: Engine) {
 function startPolling($: Engine) {
   isOpen = true
   isPaused = false
+  // Other panels may have saved finishes while this one was closed or away.
+  savedReadAt = undefined
   if (timer === undefined && !isTicking) void tick($)
 }
 
