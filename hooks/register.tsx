@@ -22,9 +22,9 @@ const BUSY_MS = 3000 // a session is working: its finish shows within 3 s
 const IDLE_MS = 8000 // nothing is working
 const SELF_MS = 30000 // this session's own row, while nothing says it changed
 const OTHERS_MS = 60000 // what the other panels saved, while this one stays open
-const KEY = 'finished:' // each panel saves the finishes it saw under KEY + its session id
+const KEY = 'finished:' // each panel saves the finishes it saw under KEY + its session id + ':' + when it saved
 const LEGACY_KEY = 'finishedAt' // the one shared key before 0.1.5, still read for its times
-const KEEP_MS = 14 * 24 * 60 * 60 * 1000 // a panel's key goes once it hasn't saved for this long
+const KEEP_MS = 14 * 24 * 60 * 60 * 1000 // a key goes once it's this old
 const REFRESH_MS = 24 * 60 * 60 * 1000 // an open panel saves at least this often, so its key stays
 const LIST_LIMIT = 60
 const PER_GROUP = 8
@@ -52,9 +52,11 @@ let selfReadAt = 0
 let isSelfStale = true
 // When each session last finished (ms), as the panel shows it.
 let finished: Record<string, number> | undefined
-// The finishes this session's panel has seen itself, which it alone saves, under
-// its own key, so no other panel's save can ever be written over.
+// The finishes this session's panel has seen itself, which it alone saves, so no
+// other panel's save can ever be written over.
 let observed: Record<string, number> = {}
+// The keys this panel saved under before, which go once a newer save is down.
+let ownKeys: string[] = []
 let savedJson = ''
 let savedAt = 0
 // When a running session no panel has seen finish was first seen. Kept here
@@ -105,29 +107,43 @@ function ago(ms: number) {
   return hours < 24 ? `${hours}h` : `${Math.floor(hours / 24)}d`
 }
 
+// When a key was saved, from its name. Keys from before 0.1.7 don't carry it.
+function savedTime(key: string) {
+  const at = Number(key.slice(key.lastIndexOf(':') + 1))
+  return Number.isFinite(at) ? at : undefined
+}
+
 // Reads what every panel saved and keeps the latest finish for each session:
-// finish times only move forward. A key whose panel hasn't saved for KEEP_MS is
-// removed on the way.
+// finish times only move forward, so what was read before stays. A key older
+// than KEEP_MS is removed on the way. Its age is in its name and a save never
+// reuses a key, so this can't remove a save made since: the store has no way to
+// delete only if unchanged. An older key is rewritten in place, so only its own
+// panel removes it.
 async function readSaved($: Engine, now: number, ownKey: string | undefined) {
-  const times: Record<string, number> = {}
+  const times: Record<string, number> = { ...saved }
   const add = (more: unknown) => {
     if (more === null || typeof more !== 'object') return
     for (const [id, at] of Object.entries(more)) {
       if (typeof at === 'number' && at > (times[id] ?? -Infinity)) times[id] = at
     }
   }
+  const own: string[] = []
   for (const key of await $.store.keys()) {
     if (key === LEGACY_KEY) add(await $.store.get(key))
     if (!key.startsWith(KEY)) continue
-    const entry = (await $.store.get(key)) as { at?: unknown; times?: unknown } | undefined
-    if (key !== ownKey && (typeof entry?.at !== 'number' || now - entry.at > KEEP_MS)) {
+    const isOwn = key === ownKey || key.startsWith(`${ownKey}:`)
+    const at = savedTime(key)
+    if (isOwn) own.push(key)
+    else if (at !== undefined && now - at > KEEP_MS) {
       await $.store.delete(key)
       continue
     }
+    const entry = (await $.store.get(key)) as { at?: unknown; times?: unknown } | undefined
+    if (!isOwn && at === undefined && (typeof entry?.at !== 'number' || now - entry.at > KEEP_MS)) continue
     add(entry?.times)
     // This panel's own key holds what it saw before a restart or reload: take it
     // back as its own, or the next save would drop finishes of sessions now working.
-    if (key === ownKey && entry?.times !== null && typeof entry?.times === 'object') {
+    if (isOwn && entry?.times !== null && typeof entry?.times === 'object') {
       for (const [id, at] of Object.entries(entry.times)) {
         if (typeof at === 'number' && at > (observed[id] ?? -Infinity)) observed[id] = at
       }
@@ -135,6 +151,7 @@ async function readSaved($: Engine, now: number, ownKey: string | undefined) {
   }
   saved = times
   savedReadAt = now
+  ownKeys = own
 }
 
 // A finished session takes the latest finish any panel saw, its last activity
@@ -164,13 +181,18 @@ function track(list: Listed[]) {
   finished = shown
 }
 
-// Saves the finishes this panel saw under its own key, when they changed.
+// Saves the finishes this panel saw under a new key, when they changed, then
+// drops its older keys.
 async function save($: Engine, now: number, ownKey: string | undefined) {
   const json = JSON.stringify(observed)
   if (ownKey === undefined || (json === savedJson && now - savedAt < REFRESH_MS)) return
-  await $.store.set(ownKey, { at: now, times: observed })
+  const key = `${ownKey}:${now}`
+  await $.store.set(key, { at: now, times: observed })
   savedJson = json
   savedAt = now
+  const old = ownKeys.filter(one => one !== key)
+  ownKeys = [key]
+  for (const one of old) await $.store.delete(one)
 }
 
 function arrange(list: Listed[], now: number): Board {

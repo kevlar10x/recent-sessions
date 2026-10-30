@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.7 - 2026-10-30
+
+- If a panel came back after two weeks away and saved just as another panel was clearing out its old entry, the fresh save could be removed too. Each save now goes in a new entry dated by its name, so clearing out an old one can't touch a newer one.
+
 ## 0.1.6 - 2026-10-28
 
 - After the app restarted or the mod reloaded, a panel's first save dropped the finish of every session that was working right then, so those sessions later jumped up the list. The panel now picks its own saved finishes back up first.

@@ -111,10 +111,19 @@ const before = (text: string, first: string, second: string) => text.indexOf(fir
 
 // The store every session's panel shares, which a test writes to as another
 // session's panel would. `onSet` runs as this panel saves, before its save
-// lands. Counts how often the panel lists the keys.
-function sharedStore(on: On, saved: Record<string, unknown>, onSet?: (key: string) => void) {
+// lands; `onGet` runs right after a read. Counts how often the panel lists the keys.
+function sharedStore(
+  on: On,
+  saved: Record<string, unknown>,
+  onSet?: (key: string) => void,
+  onGet?: (key: string) => void,
+) {
   const counts = { keys: 0 }
-  on('store.get', (_, e) => ({ value: saved[e.key] }))
+  on('store.get', (_, e) => {
+    const value = saved[e.key]
+    onGet?.(e.key)
+    return { value }
+  })
   on('store.set', (_, e) => {
     onSet?.(e.key)
     saved[e.key] = e.value
@@ -132,6 +141,11 @@ function sharedStore(on: On, saved: Record<string, unknown>, onSet?: (key: strin
 }
 
 const timesOf = (entry: unknown) => (entry as { times: Record<string, number> } | undefined)?.times
+
+// The keys a panel saved under: `finished:<session>:<when it saved>`.
+const keysOf = (saved: Record<string, unknown>, id: string) =>
+  Object.keys(saved).filter(key => key.startsWith(`finished:${id}:`))
+const ownEntry = (saved: Record<string, unknown>, id: string) => saved[keysOf(saved, id).at(-1) ?? '']
 
 test('groups and sessions are ordered by when they last finished', async ($, on) => {
   const clock = mock.clock(on, { now: START + 10 * MINUTE })
@@ -330,24 +344,89 @@ test("a working session's first sighting isn't saved, so it can't outrank a fini
   engine(on, app)
   await open($, clock)
 
-  expect(timesOf(saved['finished:self'])?.z).toBeUndefined()
+  expect(timesOf(ownEntry(saved, 'self'))?.z).toBeUndefined()
   expect(before(await drawn($), 'Group two', 'Group one')).toBe(true)
 })
 
 test("a panel's saved finishes go once it hasn't saved for two weeks", async ($, on) => {
   const clock = mock.clock(on, { now: START })
+  const old = START - 15 * 24 * 60 * MINUTE
   const saved: Record<string, unknown> = {
-    'finished:gone': { at: START - 15 * 24 * 60 * MINUTE, times: { a: START - 15 * 24 * 60 * MINUTE } },
-    'finished:recent': { at: START - MINUTE, times: { a: START - MINUTE } },
+    [`finished:gone:${old}`]: { at: old, times: { a: old } },
+    [`finished:recent:${START - MINUTE}`]: { at: START - MINUTE, times: { a: START - MINUTE } },
   }
   sharedStore(on, saved)
   const app: App = { list: [session('a', 'one', -5)], self: session('self', null, 0), isOnScreen: true, calls: [] }
   engine(on, app)
   await open($, clock)
 
-  expect('finished:gone' in saved).toBe(false)
-  expect('finished:recent' in saved).toBe(true)
-  expect(timesOf(saved['finished:self'])?.a).toBe(START - 5 * MINUTE)
+  expect(keysOf(saved, 'gone')).toEqual([])
+  expect(keysOf(saved, 'recent').length).toBe(1)
+  expect(timesOf(ownEntry(saved, 'self'))?.a).toBe(START - 5 * MINUTE)
+})
+
+test('a panel that resumes while its old key is cleaned up keeps what it saves', async ($, on) => {
+  const clock = mock.clock(on, { now: START + 12 * MINUTE })
+  const old = START - 15 * 24 * 60 * MINUTE
+  const stale = `finished:b:${old}`
+  const fresh = `finished:b:${START + 12 * MINUTE}`
+  const saved: Record<string, unknown> = { [stale]: { at: old, times: { x: old } } }
+  // Panel b comes back right after this panel listed the keys and read b's old
+  // key, or between those: it saves that x finished at 9 and drops its old key.
+  let isResumed = false
+  const resume = () => {
+    if (isResumed) return
+    isResumed = true
+    saved[fresh] = { at: START + 12 * MINUTE, times: { x: START + 9 * MINUTE } }
+    delete saved[stale]
+  }
+  sharedStore(on, saved, undefined, resume)
+  const app: App = {
+    list: [session('x', 'one', 12, true), session('w', 'two', 10)],
+    self: session('self', 'three', 0),
+    isOnScreen: true,
+    calls: [],
+  }
+  engine(on, app)
+  await open($, clock)
+  await clock.advance(70_000)
+
+  expect(timesOf(saved[fresh])?.x).toBe(START + 9 * MINUTE)
+})
+
+test('a key from before 0.1.7 that is written during cleanup is left alone', async ($, on) => {
+  const clock = mock.clock(on, { now: START })
+  const old = START - 15 * 24 * 60 * MINUTE
+  const saved: Record<string, unknown> = { 'finished:b': { at: old, times: { x: old } } }
+  sharedStore(on, saved, undefined, key => {
+    if (key === 'finished:b') saved[key] = { at: START, times: { x: START - MINUTE } }
+  })
+  const app: App = { list: [session('a', 'one', -5)], self: session('self', null, 0), isOnScreen: true, calls: [] }
+  engine(on, app)
+  await open($, clock)
+  await clock.advance(70_000)
+
+  expect(timesOf(saved['finished:b'])?.x).toBe(START - MINUTE)
+})
+
+test('a panel keeps one key, and moves its key from before 0.1.7 onto it', async ($, on) => {
+  const clock = mock.clock(on, { now: START + 12 * MINUTE })
+  const saved: Record<string, unknown> = { 'finished:self': { at: START, times: { x: START + 9 * MINUTE } } }
+  sharedStore(on, saved)
+  const app: App = {
+    list: [session('x', 'one', 12, true), session('w', 'two', 10)],
+    self: session('self', 'three', 0),
+    isOnScreen: true,
+    calls: [],
+  }
+  engine(on, app)
+  await open($, clock)
+  app.list = [session('x', 'one', 12, true), session('w', 'two', 12)]
+  await clock.advance(10_000)
+
+  expect('finished:self' in saved).toBe(false)
+  expect(keysOf(saved, 'self').length).toBe(1)
+  expect(timesOf(ownEntry(saved, 'self'))?.x).toBe(START + 9 * MINUTE)
 })
 
 test("other panels' saves are read once a minute while the panel stays open", async ($, on) => {
@@ -379,7 +458,7 @@ test("after a restart, a working session's saved finish stays in this panel's ke
   await open($, clock)
   await clock.advance(70_000)
 
-  expect(timesOf(saved['finished:self'])?.x).toBe(START + 9 * MINUTE)
+  expect(timesOf(ownEntry(saved, 'self'))?.x).toBe(START + 9 * MINUTE)
   expect(before(await drawn($), 'Group two', 'Group one')).toBe(true)
 })
 
